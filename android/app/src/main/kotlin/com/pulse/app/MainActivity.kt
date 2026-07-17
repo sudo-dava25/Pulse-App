@@ -2,7 +2,9 @@ package com.pulse.app
 
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.StandardMethodCodec
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
@@ -12,17 +14,28 @@ import java.util.concurrent.TimeUnit
  * lewat `su`. Semua pemanggilan dari Dart (lihat RootShell di
  * lib/services/root_shell.dart) masuk lewat MethodChannel "pulse/root".
  *
- * CATATAN: proses `su -c ...` dijalankan secara síncron di background
- * thread bawaan MethodChannel handler Flutter (bukan main thread UI),
- * jadi aman dari sisi ANR - tapi tetap beri timeout supaya satu
- * perintah yang macet tidak menggantung sesi polling selamanya.
+ * PENTING: MethodChannel ini SENGAJA dipasang dengan background
+ * TaskQueue (`messenger.makeBackgroundTaskQueue()`). Tanpa ini, handler
+ * `setMethodCallHandler` berjalan di UI thread utama Android secara
+ * default - artinya setiap kali `su -c ...` dipanggil (bisa makan
+ * waktu ratusan ms), seluruh UI Flutter ikut freeze/nge-lag. Ini salah
+ * satu penyebab utama app terasa "berat" sebelum diperbaiki.
  */
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "pulse/root"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
+
+        val messenger: BinaryMessenger = flutterEngine.dartExecutor.binaryMessenger
+        val backgroundTaskQueue = messenger.makeBackgroundTaskQueue()
+
+        MethodChannel(
+            messenger,
+            CHANNEL,
+            StandardMethodCodec.INSTANCE,
+            backgroundTaskQueue,
+        ).setMethodCallHandler { call, result ->
             when (call.method) {
                 "checkRoot" -> result.success(checkRoot())
                 "exec" -> {
