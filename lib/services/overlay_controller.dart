@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:device_apps/device_apps.dart';
+import 'package:installed_apps/installed_apps.dart';
 import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 
 import '../models/overlay_theme.dart';
@@ -80,7 +80,7 @@ class OverlayController {
 
     // Baru lempar intent buka game-nya SETELAH overlay siap, supaya
     // begitu game tampil di layar, overlay langsung ikut nongol.
-    await DeviceApps.openApp(packageName);
+    await InstalledApps.startApp(packageName);
 
     _watchTimer?.cancel();
     _watchTimer = Timer.periodic(const Duration(seconds: 2), (_) => _checkForeground());
