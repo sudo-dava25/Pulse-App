@@ -18,7 +18,7 @@ dependencies:
   permission_handler: ^11.3.0
 
   # Daftar aplikasi terinstal + launch intent (untuk tab "Game")
-  device_apps: ^2.2.0
+  installed_apps: ^2.1.1
 
   # Overlay window (bubble mengambang di atas game lain)
   flutter_overlay_window: ^0.5.0
@@ -30,3 +30,4 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  
