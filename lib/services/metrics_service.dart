@@ -4,26 +4,19 @@ import 'dart:math';
 import '../models/metrics.dart';
 import 'root_shell.dart';
 
-/// Membaca & menghitung FPS/CPU/GPU/suhu secara berkala lewat root shell.
-///
-/// CATATAN JUJUR (baca sebelum ubah-ubah parsing di bawah):
-/// - FPS per-game: diambil dari `dumpsys gfxinfo <pkg> framestats`, yang
-///   mengembalikan tabel CSV berisi timestamp nanodetik tiap frame yang
-///   dirender proses itu. Kolom persis bisa berbeda antar versi Android,
-///   jadi parser di bawah mencari header "FRAMESTATS" lalu ambil kolom
-///   VSYNC (index ke-2) secara defensif.
-/// - CPU per-app: dihitung dari delta `/proc/<pid>/stat` (utime+stime)
-///   dibagi delta `/proc/stat` total, dikali jumlah core. Butuh dua
-///   sample berurutan, sample pertama akan menghasilkan 0.
-/// - GPU: HANYA sistem-wide, tidak per-app - Android/vendor Adreno tidak
-///   memecah GPU busy% per proses. Path sysfs `kgsl-3d0/gpubusy` spesifik
-///   Qualcomm Adreno; di GPU lain (Mali/PowerVR) field ini akan null.
-/// - Suhu: dibaca dari /sys/class/thermal/thermal_zone*, dicocokkan
-///   berdasarkan nama zona yang mengandung "cpu"/"gpu" - penamaan zona
-///   sangat bervariasi antar vendor, jadi anggap ini best-effort dan
-///   perlu di-tuning per device saat testing nyata.
 class MetricsService {
   MetricsService();
+
+  static const _markStat = '__STAT__';
+  static const _markProc = '__PROC__';
+  static const _markGpuBusy = '__GPUBUSY__';
+  static const _markGpuFreq = '__GPUFREQ__';
+  static const _markTherm = '__THERM__';
+  static const _markBattery = '__BATTERY__';
+  static const _markFps = '__FPS__';
+  static const _allMarks = {
+    _markStat, _markProc, _markGpuBusy, _markGpuFreq, _markTherm, _markBattery, _markFps,
+  };
 
   Timer? _timer;
   final _controller = StreamController<Metrics>.broadcast();
@@ -35,18 +28,15 @@ class MetricsService {
   final List<double> _fpsHistory = [];
   final List<int> _vsyncHistoryNs = [];
 
-  int? _lastProcJiffies; // utime+stime proses target
-  int? _lastTotalJiffies; // total dari /proc/stat
-  int _coreCount = 8; // fallback, di-refresh saat start()
+  int? _lastProcJiffies;
+  int? _lastTotalJiffies;
+  int _coreCount = 8;
 
   DateTime? _lastBatterySampleTime;
   double? _lastBatteryLevel;
 
   bool get isRunning => _timer != null;
 
-  /// Mulai polling. [targetPackage] null berarti hanya metrik
-  /// sistem-wide (CPU total, suhu, baterai) yang diisi - dipakai saat
-  /// belum ada game yang sedang dipantau.
   Future<void> start({String? targetPackage}) async {
     stop();
     _targetPackage = targetPackage;
@@ -61,7 +51,7 @@ class MetricsService {
       _targetPid = await _resolvePid(targetPackage);
     }
 
-    _timer = Timer.periodic(const Duration(milliseconds: 900), (_) => _tick());
+    _timer = Timer.periodic(const Duration(milliseconds: 1000), (_) => _tick());
     unawaited(_tick());
   }
 
@@ -76,15 +66,17 @@ class MetricsService {
   }
 
   Future<void> _tick() async {
-    final fpsResult = _targetPackage != null
-        ? await _readFps(_targetPackage!)
-        : (instant: 0.0, avg: 0.0, low1: 0.0);
+    final raw = await RootShell.exec(_buildCombinedCommand());
+    final sections = _splitSections(raw);
 
-    final cpu = await _readCpuPercent();
-    final gpu = await _readGpuBusyPercent();
-    final gpuFreq = await _readGpuFreqMhz();
-    final temps = await _readTemps();
-    final battery = await _readBattery();
+    final fpsResult = _targetPackage != null
+        ? _parseFps(sections[_markFps] ?? '')
+        : (instant: 0.0, avg: 0.0, low1: 0.0);
+    final cpu = _parseCpu(sections[_markStat] ?? '', sections[_markProc] ?? '');
+    final gpu = _parseGpuBusy(sections[_markGpuBusy] ?? '');
+    final gpuFreq = _parseGpuFreq(sections[_markGpuFreq] ?? '');
+    final temps = _parseTemps(sections[_markTherm] ?? '');
+    final battery = _parseBattery(sections[_markBattery] ?? '');
 
     _controller.add(Metrics(
       fps: fpsResult.instant,
@@ -101,12 +93,73 @@ class MetricsService {
     ));
   }
 
-  // ---------------------------------------------------------------------
-  // FPS (per package, lewat framestats)
-  // ---------------------------------------------------------------------
+  String _buildCombinedCommand() {
+    final pkg = _targetPackage;
+    final pid = _targetPid;
+    final buffer = StringBuffer();
 
-  Future<({double instant, double avg, double low1})> _readFps(String pkg) async {
-    final raw = await RootShell.exec('dumpsys gfxinfo $pkg framestats');
+    buffer.writeln('echo $_markStat');
+    buffer.writeln('cat /proc/stat');
+
+    buffer.writeln('echo $_markProc');
+    if (pid != null) {
+      buffer.writeln('cat /proc/$pid/stat 2>/dev/null');
+    }
+
+    buffer.writeln('echo $_markGpuBusy');
+    buffer.writeln('cat /sys/class/kgsl/kgsl-3d0/gpubusy 2>/dev/null');
+
+    buffer.writeln('echo $_markGpuFreq');
+    buffer.writeln('cat /sys/class/kgsl/kgsl-3d0/clock_mhz 2>/dev/null');
+
+    buffer.writeln('echo $_markTherm');
+    buffer.writeln(
+      'for z in /sys/class/thermal/thermal_zone*; do echo "\$z:\$(cat \$z/type 2>/dev/null):\$(cat \$z/temp 2>/dev/null)"; done',
+    );
+
+    buffer.writeln('echo $_markBattery');
+    buffer.writeln('dumpsys battery');
+
+    if (pkg != null) {
+      buffer.writeln('echo $_markFps');
+      buffer.writeln('dumpsys gfxinfo $pkg framestats');
+    }
+
+    return buffer.toString();
+  }
+
+  Map<String, String> _splitSections(String raw) {
+    final result = <String, String>{};
+    String? current;
+    final buf = StringBuffer();
+
+    for (final line in raw.split('\n')) {
+      final trimmed = line.trim();
+      if (_allMarks.contains(trimmed)) {
+        if (current != null) result[current] = buf.toString();
+        current = trimmed;
+        buf.clear();
+      } else if (current != null) {
+        buf.writeln(line);
+      }
+    }
+    if (current != null) result[current] = buf.toString();
+    return result;
+  }
+
+  Future<int> _detectCoreCount() async {
+    final raw = await RootShell.exec('cat /proc/stat | grep -c "^cpu[0-9]"');
+    final n = int.tryParse(raw.trim());
+    return (n != null && n > 0) ? n : 8;
+  }
+
+  Future<int?> _resolvePid(String pkg) async {
+    final raw = await RootShell.exec('pidof $pkg');
+    final first = raw.trim().split(RegExp(r'\s+')).firstOrNull;
+    return first == null ? null : int.tryParse(first);
+  }
+
+  ({double instant, double avg, double low1}) _parseFps(String raw) {
     if (raw.isEmpty) return (instant: 0.0, avg: 0.0, low1: 0.0);
 
     final lines = raw.split('\n');
@@ -119,10 +172,9 @@ class MetricsService {
       }
       if (!inTable) continue;
       if (trimmed.isEmpty || trimmed.startsWith('Flags')) continue;
-      if (trimmed.startsWith('---PROFILEDATA---')) break;
 
       final cols = trimmed.split(',');
-      // Kolom ke-2 (index 1) pada format framestats adalah VSYNC timestamp (ns).
+     
       if (cols.length < 2) continue;
       final vsync = int.tryParse(cols[1].trim());
       if (vsync == null || vsync == 0) continue;
@@ -155,25 +207,7 @@ class MetricsService {
     return (instant: instant, avg: avg, low1: low1);
   }
 
-  // ---------------------------------------------------------------------
-  // CPU (per-app kalau ada target, selalu juga hitung total sistem)
-  // ---------------------------------------------------------------------
-
-  Future<int> _detectCoreCount() async {
-    final raw = await RootShell.exec('cat /proc/stat | grep -c "^cpu[0-9]"');
-    final n = int.tryParse(raw.trim());
-    return (n != null && n > 0) ? n : 8;
-  }
-
-  Future<int?> _resolvePid(String pkg) async {
-    final raw = await RootShell.exec('pidof $pkg');
-    final first = raw.trim().split(RegExp(r'\s+')).firstOrNull;
-    return first == null ? null : int.tryParse(first);
-  }
-
-  Future<({double total, List<double> perCore})> _readCpuPercent() async {
-    // Total jiffies sistem, dari baris pertama /proc/stat.
-    final statRaw = await RootShell.exec('cat /proc/stat');
+  ({double total, List<double> perCore}) _parseCpu(String statRaw, String procRaw) {
     final firstLine = statRaw.split('\n').firstWhere(
           (l) => l.startsWith('cpu '),
           orElse: () => '',
@@ -185,17 +219,13 @@ class MetricsService {
     final totalJiffies = values.fold<int>(0, (a, b) => a + b);
 
     double totalPercent = 0;
-    if (_targetPid != null) {
-      final procRaw = await RootShell.exec('cat /proc/${_targetPid}/stat');
-      // Field ke-2 (comm) dibungkus tanda kurung dan BISA mengandung spasi
-      // (mis. nama proses custom ROM), jadi jangan split naif dari awal -
-      // cari posisi ')' terakhir dulu, baru split sisanya.
+    if (_targetPid != null && procRaw.trim().isNotEmpty) {
+     
       final closeParen = procRaw.lastIndexOf(')');
       if (closeParen != -1) {
         final afterName = procRaw.substring(closeParen + 1).trim();
         final procFields = afterName.split(RegExp(r'\s+'));
-        // Setelah "pid (comm)", index 0 = state (field ke-3 asli),
-        // sehingga utime ada di index 11, stime di index 12.
+       
         if (procFields.length >= 13) {
           final utime = int.tryParse(procFields[11]) ?? 0;
           final stime = int.tryParse(procFields[12]) ?? 0;
@@ -215,8 +245,6 @@ class MetricsService {
     }
     _lastTotalJiffies = totalJiffies;
 
-    // Estimasi beban per-core dari /proc/stat cpu0..N (untuk visual bar saja,
-    // bukan cerminan proses target secara spesifik).
     final perCoreLines =
         statRaw.split('\n').where((l) => RegExp(r'^cpu[0-9]+ ').hasMatch(l)).toList();
     final perCore = <double>[];
@@ -233,12 +261,7 @@ class MetricsService {
     return (total: totalPercent, perCore: perCore);
   }
 
-  // ---------------------------------------------------------------------
-  // GPU (sistem-wide, best-effort - lihat catatan di kepala file)
-  // ---------------------------------------------------------------------
-
-  Future<double?> _readGpuBusyPercent() async {
-    final raw = await RootShell.exec('cat /sys/class/kgsl/kgsl-3d0/gpubusy');
+  double? _parseGpuBusy(String raw) {
     final parts = raw.trim().split(RegExp(r'\s+'));
     if (parts.length < 2) return null;
     final busy = int.tryParse(parts[0]);
@@ -247,30 +270,20 @@ class MetricsService {
     return (busy / total * 100).clamp(0, 100).toDouble();
   }
 
-  Future<double?> _readGpuFreqMhz() async {
-    final raw = await RootShell.exec('cat /sys/class/kgsl/kgsl-3d0/clock_mhz');
-    final v = double.tryParse(raw.trim());
-    return v;
+  double? _parseGpuFreq(String raw) {
+    return double.tryParse(raw.trim());
   }
 
-  // ---------------------------------------------------------------------
-  // Suhu
-  // ---------------------------------------------------------------------
-
-  Future<({double? cpu, double? gpu})> _readTemps() async {
-    final zoneList = await RootShell.exec(
-      'for z in /sys/class/thermal/thermal_zone*; do echo "\$z:\$(cat \$z/type 2>/dev/null):\$(cat \$z/temp 2>/dev/null)"; done',
-    );
+  ({double? cpu, double? gpu}) _parseTemps(String raw) {
     double? cpuTemp;
     double? gpuTemp;
-    for (final line in zoneList.split('\n')) {
+    for (final line in raw.split('\n')) {
       final segs = line.split(':');
       if (segs.length < 3) continue;
       final type = segs[1].toLowerCase();
       final rawTemp = double.tryParse(segs[2].trim());
       if (rawTemp == null) continue;
-      // Sebagian besar vendor melaporkan millidegree (perlu /1000),
-      // sebagian lain sudah dalam derajat langsung - heuristik sederhana:
+     
       final celsius = rawTemp > 200 ? rawTemp / 1000.0 : rawTemp;
       if (cpuTemp == null && (type.contains('cpu') || type.contains('soc') || type.contains('big'))) {
         cpuTemp = celsius;
@@ -282,15 +295,14 @@ class MetricsService {
     return (cpu: cpuTemp, gpu: gpuTemp);
   }
 
-  Future<({double? tempC, double? drainPerMinute})> _readBattery() async {
-    final raw = await RootShell.exec('dumpsys battery');
+  ({double? tempC, double? drainPerMinute}) _parseBattery(String raw) {
     double? tempC;
     double? level;
     for (final line in raw.split('\n')) {
       final t = line.trim();
       if (t.startsWith('temperature:')) {
         final v = int.tryParse(t.split(':').last.trim());
-        if (v != null) tempC = v / 10.0; // dumpsys battery: persepuluh derajat
+        if (v != null) tempC = v / 10.0;
       } else if (t.startsWith('level:')) {
         level = double.tryParse(t.split(':').last.trim());
       }
