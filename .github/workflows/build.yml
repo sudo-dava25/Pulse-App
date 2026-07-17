@@ -1,0 +1,59 @@
+name: Build Pulse APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Java (dibutuhkan Gradle/AGP)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Lengkapi scaffolding Android (gradle, wrapper, res) kalau belum ada
+        run: |
+          if [ ! -f android/gradlew ]; then
+            echo "Scaffolding gradle belum ada, generate dari template Flutter..."
+            flutter create --platforms=android --org com.pulse --project-name pulse_app /tmp/scaffold
+
+            # Salin semua file gradle/wrapper/res bawaan template, TAPI jangan timpa
+            # AndroidManifest.xml & MainActivity.kt custom yang sudah kita tulis manual.
+            rsync -a /tmp/scaffold/android/ ./android/ \
+              --exclude 'app/src/main/AndroidManifest.xml' \
+              --exclude 'app/src/main/kotlin/com/pulse/app/MainActivity.kt'
+
+            # Selaraskan applicationId/namespace bawaan template (com.pulse.pulse_app)
+            # dengan package yang dipakai MainActivity.kt kita (com.pulse.app).
+            find android -name "build.gradle" -o -name "build.gradle.kts" | xargs \
+              sed -i 's/com\.pulse\.pulse_app/com.pulse.app/g'
+          else
+            echo "Scaffolding gradle sudah ada, skip."
+          fi
+
+      - name: Ambil dependency
+        run: flutter pub get
+
+      - name: Build APK release
+        run: flutter build apk --release
+
+      - name: Upload APK sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pulse-app-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error

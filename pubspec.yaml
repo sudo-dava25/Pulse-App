@@ -1,0 +1,32 @@
+name: pulse_app
+description: Pulse - realtime FPS/CPU/GPU monitor untuk game Android (butuh root untuk data akurat per-game).
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+
+  # Persistensi ringan: daftar game & tema overlay yang dipilih
+  shared_preferences: ^2.2.2
+
+  # Permission SYSTEM_ALERT_WINDOW (overlay) & usage access
+  permission_handler: ^11.3.0
+
+  # Daftar aplikasi terinstal + launch intent (untuk tab "Game")
+  device_apps: ^2.2.0
+
+  # Overlay window (bubble mengambang di atas game lain)
+  flutter_overlay_window: ^0.5.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
