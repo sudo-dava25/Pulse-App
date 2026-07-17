@@ -1,5 +1,6 @@
-import 'package:device_apps/device_apps.dart';
 import 'package:flutter/material.dart';
+import 'package:installed_apps/app_info.dart';
+import 'package:installed_apps/installed_apps.dart';
 
 import '../models/game_item.dart';
 import '../services/game_repository.dart';
@@ -41,11 +42,12 @@ class _GamesScreenState extends State<GamesScreen> {
 
   Future<void> _openAddSheet() async {
     // QUERY_ALL_PACKAGES perlu di-declare di AndroidManifest - lihat README.
-    final apps = await DeviceApps.getInstalledApplications(
-      includeAppIcons: true,
-      onlyAppsWithLaunchIntent: true,
+    final apps = await InstalledApps.getInstalledApps(
+      excludeSystemApps: true,
+      excludeNonLaunchableApps: true,
+      withIcon: true,
     );
-    apps.sort((a, b) => a.appName.toLowerCase().compareTo(b.appName.toLowerCase()));
+    apps.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
 
     if (!mounted) return;
     final existing = _games.map((g) => g.packageName).toSet();
@@ -82,10 +84,10 @@ class _GamesScreenState extends State<GamesScreen> {
                         final app = apps[i];
                         final already = existing.contains(app.packageName);
                         return ListTile(
-                          leading: app is ApplicationWithIcon
-                              ? ClipRRect(borderRadius: BorderRadius.circular(9), child: Image.memory(app.icon, width: 36, height: 36))
+                          leading: app.icon != null
+                              ? ClipRRect(borderRadius: BorderRadius.circular(9), child: Image.memory(app.icon!, width: 36, height: 36))
                               : const Icon(Icons.apps_rounded),
-                          title: Text(app.appName, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                          title: Text(app.name, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
                           subtitle: Text(app.packageName, style: const TextStyle(fontSize: 11, color: AppColors.muted)),
                           trailing: already
                               ? const Icon(Icons.check_circle_rounded, color: AppColors.blue)
@@ -176,12 +178,12 @@ class _GameCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<Application?>(
-      future: DeviceApps.getApp(game.packageName, true),
+    return FutureBuilder<AppInfo?>(
+      future: InstalledApps.getAppInfo(game.packageName),
       builder: (context, snapshot) {
         final app = snapshot.data;
-        final name = app?.appName ?? game.packageName;
-        final icon = app is ApplicationWithIcon ? app.icon : null;
+        final name = app?.name ?? game.packageName;
+        final icon = app?.icon;
 
         return Container(
           padding: const EdgeInsets.all(11),
