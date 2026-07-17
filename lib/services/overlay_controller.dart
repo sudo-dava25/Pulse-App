@@ -8,16 +8,6 @@ import 'foreground_watcher.dart';
 import 'game_repository.dart';
 import 'metrics_service.dart';
 
-/// Mengatur satu "sesi main": mulai dari tap tombol Main di tab Game,
-/// sampai overlay otomatis hilang saat user keluar dari game tersebut.
-///
-/// Alur (lihat juga penjelasan di README):
-/// 1. [launchGame] set target package -> start [MetricsService] -> tampilkan
-///    overlay -> baru lempar intent buka game-nya.
-/// 2. Selagi overlay tampil, [_watchLoop] polling foreground app tiap 2 detik
-///    sebagai jaring pengaman: begitu foreground BUKAN lagi target package,
-///    sesi otomatis dihentikan.
-/// 3. [stopSession] hentikan timer, metrics, dan tutup overlay.
 class OverlayController {
   OverlayController({
     required this.metricsService,
@@ -45,7 +35,6 @@ class OverlayController {
     return await FlutterOverlayWindow.requestPermission();
   }
 
-  /// Mulai sesi untuk [packageName]: metrics + overlay + buka game-nya.
   Future<void> launchGame(String packageName) async {
     if (isSessionActive) {
       await stopSession();
@@ -59,7 +48,6 @@ class OverlayController {
 
     await metricsService.start(targetPackage: packageName);
     _metricsSub = metricsService.stream.listen((metrics) {
-      // Kirim data terbaru + tema aktif ke isolate overlay.
       FlutterOverlayWindow.shareData({
         'metrics': metrics.toMap(),
         'themeId': _theme.id,
@@ -78,8 +66,6 @@ class OverlayController {
       positionGravity: PositionGravity.auto,
     );
 
-    // Baru lempar intent buka game-nya SETELAH overlay siap, supaya
-    // begitu game tampil di layar, overlay langsung ikut nongol.
     await InstalledApps.startApp(packageName);
 
     _watchTimer?.cancel();
@@ -89,8 +75,6 @@ class OverlayController {
   Future<void> _checkForeground() async {
     if (_activePackage == null) return;
     final fg = await ForegroundWatcher.currentForegroundPackage();
-    // fg null berarti tidak berhasil terdeteksi (misal root sempat gagal) -
-    // jangan langsung dianggap "keluar game", tunggu sampel berikutnya.
     if (fg != null && fg != _activePackage) {
       await stopSession();
     }
@@ -103,8 +87,6 @@ class OverlayController {
     _metricsSub = null;
     _activePackage = null;
     await FlutterOverlayWindow.closeOverlay();
-    // Kembali ke polling sistem-wide (tanpa target) supaya Dashboard
-    // tetap dapat data CPU/suhu/baterai walau tidak ada sesi game.
     await metricsService.start();
   }
 
