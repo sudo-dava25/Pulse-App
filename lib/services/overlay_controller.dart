@@ -32,7 +32,8 @@ class OverlayController {
   Future<bool> ensureOverlayPermission() async {
     final granted = await FlutterOverlayWindow.isPermissionGranted();
     if (granted) return true;
-    return await FlutterOverlayWindow.requestPermission();
+    final result = await FlutterOverlayWindow.requestPermission();
+    return result ?? false;
   }
 
   Future<void> launchGame(String packageName) async {
